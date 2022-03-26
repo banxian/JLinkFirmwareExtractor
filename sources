@@ -1,0 +1,32 @@
+TARGETNAME=JLinkFirmwareExtractor1
+TARGETTYPE=PROGRAM
+UMTYPE=console
+UNICODE=1
+BUILD_ALLOW_ALL_WARNINGS=1
+
+USE_MSVCRT=1        # use the multithreaded runtime library
+
+#USE_NATIVE_EH=1
+#USE_RTTI=1
+
+C_DEFINES=$(C_DEFINES) /DUNICODE /D_UNICODE
+386_STDCALL=0
+amd64_STDCALL=0
+
+#INCLUDES=$(INCLUDES);.\inc;wtl\Include
+
+#USER_C_FLAGS = -DSILENCE_BUILD
+
+MSC_WARNING_LEVEL=/W3
+
+#LINKER_FLAGS=$(LINKER_FLAGS) /FIXED
+
+TARGETLIBS=$(SDK_LIB_PATH)\kernel32.lib \
+           $(SDK_LIB_PATH)\user32.lib   \
+           $(SDK_LIB_PATH)\oleaut32.lib \
+           $(SDK_LIB_PATH)\comctl32.lib \
+           $(SDK_LIB_PATH)\shlwapi.lib \
+           $(SDK_LIB_PATH)\ole32.lib \
+           $(SDK_LIB_PATH)\uuid.lib
+
+SOURCES=JLinkFirmwareExtractor1.cpp
