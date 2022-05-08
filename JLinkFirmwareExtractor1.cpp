@@ -13,6 +13,7 @@
 
 void quickdump(unsigned int addr, const unsigned char *data, unsigned int amount);
 void setwin32filetime(const char* path, tm time);
+int errprintf(__in_z __format_string const char * _Format, ...);
 
 uintptr_t func_getfw_full = 0;
 void (__cdecl *func_dbgfree)(void* buffer) = 0;
@@ -45,7 +46,7 @@ int main(int argc, char* argv[])
     }
     HMODULE dllmodule = LoadLibraryA("JLinkARM.dll");
     if (dllmodule == NULL) {
-        printf("LoadLibarary Failed!\n");
+        errprintf("LoadLibarary Failed!\n");
         return 0;
     }
 
@@ -212,9 +213,9 @@ int main(int argc, char* argv[])
                         fwsize = fwrec->decinfo->decompresslen;
                         void* wrkmem = malloc(fwrec->decinfo->workmemlen * 2);
                         //COMPRESS_DecompressToMem(fwrec->decinfo, wrkmem, 2 * fwrec->decinfo->workmemlen, fwimage, 0, fwrec->decinfo->decompresslen - 1, 0);
-                        int err = COMPRESS_DecompressToMem(fwrec->decinfo, wrkmem, 2 * fwrec->decinfo->workmemlen, fwbuffer, 0, fwrec->decinfo->decompresslen - 1, 0);
+                        int err = COMPRESS_DecompressToMem(fwrec->decinfo, wrkmem, 2 * fwrec->decinfo->workmemlen, fwbuffer, 0, fwrec->decinfo->decompresslen, 0);
                         if (err < 0) {
-                            printf("Decode failed %d!\n", err);
+                            errprintf("Decode failed %d!\n", err);
                         } else {
                             fwsize = err;
                         }
@@ -226,10 +227,13 @@ int main(int argc, char* argv[])
                         if (fwrec->localfile) {
                             char* fwpath = (char*)malloc(strlen(fwrec->localfile) + sizeof("Firmwares\\"));
                             strcpy(fwpath, "Firmwares\\");
-                            strcat(fwpath, fwrec->localfile);
                             struct _stat st;
                             if (_stat(fwpath, &st) == -1) {
-                                printf("Can't find %s on disk!\n", fwpath);
+                                errprintf("Missing \"Firmwares\" directory in current folder!\nDid you forgot execute from j-link folder?\n");
+                            }
+                            strcat(fwpath, fwrec->localfile);
+                            if (_stat(fwpath, &st) == -1) {
+                                errprintf("File \"%s\" was missing!\n", fwpath);
                             } else {
                                 char* filebuffer = (char*)malloc(st.st_size);
                                 int fd = _open(fwpath, O_RDONLY | O_BINARY);
@@ -243,7 +247,7 @@ int main(int argc, char* argv[])
                                                   func_decodefile(filebuffer + 0x200, st.st_size - 0x200, fwbuffer, dstlen):
                                                   _decodefile((uint8_t*)filebuffer + 0x200, st.st_size - 0x200, (uint8_t*)fwbuffer, dstlen);
                                     if (decoded != dstlen) {
-                                        printf("decode file failed: %d\n", decoded);
+                                        errprintf("decode file failed: %d\n", decoded);
                                     } else {
                                         fwsize = dstlen;
                                     }
@@ -394,6 +398,21 @@ void setwin32filetime(const char* path, tm time)
         SetFileTime(hFile, &ft, &ft, &ft);
         CloseHandle(hFile);
     }
+}
+
+int errprintf(__in_z __format_string const char * _Format, ...)
+{
+    HANDLE hCon = GetStdHandle(STD_OUTPUT_HANDLE);
+    CONSOLE_SCREEN_BUFFER_INFO info;
+    GetConsoleScreenBufferInfo(hCon, &info);
+    SetConsoleTextAttribute(hCon, FOREGROUND_RED | FOREGROUND_INTENSITY);
+    va_list va;
+    va_start(va, _Format);
+    int len = vfprintf(stderr, _Format, va);
+    va_end(va);
+    SetConsoleTextAttribute(hCon, info.wAttributes);
+
+    return len;
 }
 
 int _cdecl _decodefile(const uint8_t *src, size_t srclen, uint8_t *dest, size_t destlen)
