@@ -145,7 +145,7 @@ int main(int argc, char* argv[])
     firmware_rec_s* fwrec7 = g_fwarray;
     firmware6_rec_s* fwrec6 = (firmware6_rec_s*)g_fwarray;
     if (hitted) {
-        int localfiles = 0;
+        int localfiles = 0, saved = 0;
         for (size_t i = 0; i < arraysize / itemsize; i++, fwrec7++, fwrec6++) {
             // 统一到7的存储
             firmware_rec_s via;
@@ -226,11 +226,12 @@ int main(int argc, char* argv[])
                         // TODO: localfile
                         if (fwrec->localfile) {
                             char* fwpath = (char*)malloc(strlen(fwrec->localfile) + sizeof("Firmwares\\"));
-                            strcpy(fwpath, "Firmwares\\");
+                            strcpy(fwpath, "Firmwares");
                             struct _stat st;
-                            if (_stat(fwpath, &st) == -1) {
-                                errprintf("Missing \"Firmwares\" directory in current folder!\nDid you forgot execute from j-link folder?\n");
+                            if (_stat(fwpath, &st) == -1 || (st.st_mode & S_IFMT) != S_IFDIR) {
+                                errprintf("Missing \"Firmwares\" directory in current folder!\nDid you forgot cd to j-link folder?\n");
                             }
+                            strcat(fwpath, "\\");
                             strcat(fwpath, fwrec->localfile);
                             if (_stat(fwpath, &st) == -1) {
                                 errprintf("File \"%s\" was missing!\n", fwpath);
@@ -290,6 +291,7 @@ int main(int argc, char* argv[])
                         fwrite(fwbuffer, fwsize, 1, fwfile);
                         fclose(fwfile);
                         setwin32filetime(filename, date);
+                        saved++;
                     }
                     // file2
                     if (fwbuffer2 && fwsize2) {
@@ -300,6 +302,7 @@ int main(int argc, char* argv[])
                         fwrite(fwbuffer2, fwsize2, 1, fwfile);
                         fclose(fwfile);
                         setwin32filetime(filename, date);
+                        saved++;
                     }
                     if (fwrec->decinfo || fwrec->usexor || fwrec->localfile) {
                         if (fwbuffer) {
@@ -314,8 +317,9 @@ int main(int argc, char* argv[])
                 free(displayname);
             }
         }
+        printf("Saved %d firmware.\n", saved);
         if (itemsize == 0x4C && localfiles) {
-            printf("There are %d firmware on local disk.\n", localfiles);
+            printf("There are %d firmware decode from Firmwares folder.\n", localfiles);
         }
     }
 
