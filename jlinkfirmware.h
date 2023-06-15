@@ -3,9 +3,6 @@
 
 #include <stdint.h>
 
-typedef struct firmware_decinfo_s* firmware_decinfo_t;
-typedef struct firmware_rec_s* firmware_rec_t;
-
 struct firmware_decinfo_s
 {
     const void *fwbody;
@@ -19,29 +16,6 @@ struct firmware_decinfo_s
     uint32_t rev20;
     uint32_t rev24;
     uint32_t rev28;
-};
-
-struct firmware_rec_s
-{
-    const char *displayname;
-    const char *localfile;
-    const void *body;
-    uint32_t len;
-    firmware_decinfo_s *decinfo;
-    uint32_t flashspace;    // 填充到此长度
-    uint32_t flashlimit;    // 能放的有效长度
-    uint32_t paddingval;    // 填充内值
-    uint32_t timestampoff;  // 固件版本信息偏移
-    uint32_t dispnamepos;   // 产品名匹配位置(有些版本品名会变)
-    uint32_t rev28;
-    uint32_t usexor;        // 使用简易XOR
-    uint32_t rev30;
-    uint32_t rev34;
-    const void* body2;      // 备用固件内容
-    uint32_t len2;          // 备用固件长度
-    uint32_t use2;          // 双固件判断程序
-    uint32_t rev44;
-    uint32_t rev48;
 };
 
 struct firmware6_rec_s
@@ -64,6 +38,37 @@ struct firmware6_rec_s
     uint32_t use2;
     uint32_t rev40;
     uint32_t rev44;
+};
+
+struct firmware722_rec_s
+{
+    const char *displayname;
+    const char *localfile;
+    const void *body;
+    uint32_t len;
+    firmware_decinfo_s *decinfo;
+    uint32_t flashspace;    // 填充到此长度
+    uint32_t flashlimit;    // 能放的有效长度
+    uint32_t paddingval;    // 填充内值
+    uint32_t timestampoff;  // 固件版本信息偏移
+    uint32_t dispnamepos;   // 产品名匹配位置(有些版本品名会变)
+    uint32_t rev28;
+    uint32_t usexor;        // 使用简易XOR
+    uint32_t rev30;
+    uint32_t rev34;
+    const void* body2;      // 备用固件内容
+    uint32_t len2;          // 备用固件长度
+    uint32_t use2;          // 双固件判断程序
+    uint32_t rev44;
+    uint32_t rev48;
+};
+
+struct firmware_rec_s : firmware722_rec_s
+{
+    uint32_t rev4C;
+    uint32_t rev50;
+    bool pub54;
+    char pad55[3];
 };
 
 #endif

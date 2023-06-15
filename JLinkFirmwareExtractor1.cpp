@@ -61,8 +61,7 @@ int main(int argc, char* argv[])
     //quickdump(ntheader->OptionalHeader.BaseOfData, (unsigned char*)databegin, 0x100);
     bool hitted = false;
     firmware_rec_s* g_fwarray = NULL;
-    uint32_t arraysize;
-    uint32_t itemsize;
+    uint32_t itemsize, itemcount = 0;
     // 寻找"J-Trace ARM Rev.1"
     for (uint8_t* strpat = databegin; strpat < dataend - sizeof("J-Trace ARM Rev.1") && !hitted; strpat++) {
         if (*(uint32_t*)strpat == 'rT-J' && memcmp(strpat, "J-Trace ARM Rev.1", sizeof("J-Trace ARM Rev.1")) == 0) {
@@ -71,6 +70,7 @@ int main(int argc, char* argv[])
                 if (*(uint32_t*)lpstrpat == (uint32_t)strpat) {
                     printf("Found g_fwarray at RVA 0x%08X\n", lpstrpat - (uint8_t*)dllmodule);
                     // .text:100B6CD6 BF A8 3A 42 10                       mov     edi, offset g_fwarray
+                    // .text:100AEF4B B8 C0 B0 42 10                       mov     eax, offset g_fwarray
                     for (uint8_t* movedi = codebegin; movedi < codeend - 0x20 && !hitted; movedi++) {
                         if (*movedi == 0xBF && *(uint32_t*)(movedi + 1) == (uint32_t)lpstrpat) {
                             printf("Found \"mov edi, offset g_fwarray\" at RVA 0x%08X\n", movedi - (uint8_t*)dllmodule);
@@ -84,10 +84,27 @@ int main(int argc, char* argv[])
                             // 最好寻找函数结束再往回搜
                             for (uint8_t* cmpebp = movedi; cmpebp < movedi + 0x200; cmpebp++) {
                                 if ((*(uint16_t*)cmpebp & 0xF0FF) == 0xF081 && *(cmpebp + 6) == 0x72 && (*(cmpebp - 1) == 0x4C || *(cmpebp - 1) == 0x48)) {
-                                    arraysize = *(uint32_t*)(cmpebp + 2);
+                                    uint32_t arraysize = *(uint32_t*)(cmpebp + 2);
                                     itemsize = *(cmpebp - 1);
+                                    itemcount = arraysize / itemsize;
                                     g_fwarray = (firmware_rec_s*)lpstrpat;
                                     printf("Found \"cmp exx, %Xh\" at RVA 0x%08X\n", arraysize, cmpebp - (uint8_t*)dllmodule);
+                                    hitted = true;
+                                    break;
+                                }
+                            }
+                        }
+                        // 7.88f 成了单独函数
+                        if (*movedi == 0xB8 && *(uint32_t*)(movedi + 1) == (uint32_t)lpstrpat) {
+                            printf("Found \"mov eax, offset g_fwarray\" at RVA 0x%08X\n", movedi - (uint8_t*)dllmodule);
+                            //.text:100AEF48 6A 6A                                push    6Ah ; 'j'
+                            //.text:100AEF4A 56                                   push    esi
+                            for (uint8_t* pushimm = movedi - 3; pushimm > movedi - 0x20; pushimm--) {
+                                if (*pushimm == 0x6A && pushimm[2] == 0x56) {
+                                    itemsize = 0x58; // TODO: parse add
+                                    itemcount = pushimm[1];
+                                    g_fwarray = (firmware_rec_s*)lpstrpat;
+                                    printf("Found \"push %d\" at RVA 0x%08X\n", itemcount, pushimm - (uint8_t*)dllmodule);
                                     hitted = true;
                                     break;
                                 }
@@ -142,20 +159,26 @@ int main(int argc, char* argv[])
         }
     }
     // 判断是7.22还是v6版长度
-    firmware_rec_s* fwrec7 = g_fwarray;
     firmware6_rec_s* fwrec6 = (firmware6_rec_s*)g_fwarray;
+    firmware722_rec_s* fwrec7 = g_fwarray;
+    firmware_rec_s* fwrec7f = g_fwarray;
     if (hitted) {
         int localfiles = 0, saved = 0;
-        for (size_t i = 0; i < arraysize / itemsize; i++, fwrec7++, fwrec6++) {
+        for (size_t i = 0; i < itemcount; i++, fwrec7++, fwrec6++) {
             // 统一到7的存储
-            firmware_rec_s via;
-            firmware_rec_s* fwrec = (itemsize == 0x4C)?fwrec7:&via;
-            if (itemsize != 0x4C) {
-                via.displayname = fwrec6->displayname;
-                via.localfile = 0;
-                memcpy(&via.body, &fwrec6->body, 0x44);
+            firmware_rec_s via6;
+            firmware_rec_s via7;
+            firmware_rec_s* fwrec = (itemsize == 0x48)?&via6:(itemsize == 0x4C)?&via7:fwrec7f;
+            if (itemsize == sizeof(*fwrec6)) {
+                via6.displayname = fwrec6->displayname;
+                via6.localfile = 0;
+                memcpy(&via6.body, &fwrec6->body, sizeof(*fwrec6) - 4);
             }
-            // 数组最后有一个空白记录
+            if (itemsize == sizeof(*fwrec7)) {
+                via7.pub54 = true;
+                memcpy(&via7, fwrec7, sizeof(*fwrec7));
+            }
+            // 历史设计, 数组最后有一个空白记录
             if (fwrec->displayname == 0) {
                 break;
             }
