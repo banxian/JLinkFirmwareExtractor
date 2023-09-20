@@ -9,6 +9,7 @@
 #include <fcntl.h>
 #include <time.h>
 #include "jlinkfirmware.h"
+#include "ldisasm.h"
 
 
 void quickdump(unsigned int addr, const unsigned char *data, unsigned int amount);
@@ -26,6 +27,7 @@ int _cdecl _decodefile(const uint8_t *src, size_t srclen, uint8_t *dest, size_t 
 void xordecode(void* dst, const void* src, size_t len);
 void normalizefilename(char* filepath);
 tm get_build_date(const char* version);
+uint32_t parseitemsize(uint8_t* codeptr, int limit);
 
 int main(int argc, char* argv[])
 {
@@ -44,7 +46,14 @@ int main(int argc, char* argv[])
             }
         }
     }
+    // TODO: search path
+#ifdef _DEBUG
+    char fullPath[MAX_PATH];
+    GetFullPathNameA("JLinkARM.dll", _countof(fullPath), fullPath, NULL);
+    HMODULE dllmodule = LoadLibraryA(fullPath);
+#else
     HMODULE dllmodule = LoadLibraryA("JLinkARM.dll");
+#endif
     if (dllmodule == NULL) {
         errprintf("LoadLibarary Failed!\n");
         return 0;
@@ -71,9 +80,9 @@ int main(int argc, char* argv[])
                     printf("Found g_fwarray at RVA 0x%08X\n", lpstrpat - (uint8_t*)dllmodule);
                     // .text:100B6CD6 BF A8 3A 42 10                       mov     edi, offset g_fwarray
                     // .text:100AEF4B B8 C0 B0 42 10                       mov     eax, offset g_fwarray
-                    for (uint8_t* movedi = codebegin; movedi < codeend - 0x20 && !hitted; movedi++) {
-                        if (*movedi == 0xBF && *(uint32_t*)(movedi + 1) == (uint32_t)lpstrpat) {
-                            printf("Found \"mov edi, offset g_fwarray\" at RVA 0x%08X\n", movedi - (uint8_t*)dllmodule);
+                    for (uint8_t* moveedi = codebegin; moveedi < codeend - 0x20 && !hitted; moveedi++) {
+                        if (*moveedi == 0xBF && *(uint32_t*)(moveedi + 1) == (uint32_t)lpstrpat) {
+                            printf("Found \"mov edi, offset g_fwarray\" at RVA 0x%08X\n", moveedi - (uint8_t*)dllmodule);
                             //.text:100B6D3B 83 C7 4C                             add     edi, 4Ch
                             //.text:100B6D3E 81 FD 3C 19 00 00                    cmp     ebp, 193Ch
                             //.text:100B6D44 72 9A                                jb      short loc_100B6CE0
@@ -82,7 +91,7 @@ int main(int argc, char* argv[])
                             //.text:100AF612 81 FB 60 15 00 00                    cmp     ebx, 1560h
                             //.text:100AF618 72 99                                jb      short loc_100AF5B3
                             // 最好寻找函数结束再往回搜
-                            for (uint8_t* cmpebp = movedi; cmpebp < movedi + 0x200; cmpebp++) {
+                            for (uint8_t* cmpebp = moveedi; cmpebp < moveedi + 0x200; cmpebp++) {
                                 if ((*(uint16_t*)cmpebp & 0xF0FF) == 0xF081 && *(cmpebp + 6) == 0x72 && (*(cmpebp - 1) == 0x4C || *(cmpebp - 1) == 0x48)) {
                                     uint32_t arraysize = *(uint32_t*)(cmpebp + 2);
                                     itemsize = *(cmpebp - 1);
@@ -95,13 +104,19 @@ int main(int argc, char* argv[])
                             }
                         }
                         // 7.88f 成了单独函数
-                        if (*movedi == 0xB8 && *(uint32_t*)(movedi + 1) == (uint32_t)lpstrpat) {
-                            printf("Found \"mov eax, offset g_fwarray\" at RVA 0x%08X\n", movedi - (uint8_t*)dllmodule);
+                        if (*moveedi == 0xB8 && *(uint32_t*)(moveedi + 1) == (uint32_t)lpstrpat) {
+                            printf("Found \"mov eax, offset g_fwarray\" at RVA 0x%08X\n", moveedi - (uint8_t*)dllmodule);
                             //.text:100AEF48 6A 6A                                push    6Ah ; 'j'
                             //.text:100AEF4A 56                                   push    esi
-                            for (uint8_t* pushimm = movedi - 3; pushimm > movedi - 0x20; pushimm--) {
+                            for (uint8_t* pushimm = moveedi - 3; pushimm > moveedi - 0x20; pushimm--) {
                                 if (*pushimm == 0x6A && pushimm[2] == 0x56) {
-                                    itemsize = 0x58; // TODO: parse add
+                                    //100AEF50 E8 2B FF FF FF                       call    func_outlinefind
+                                    if (moveedi[5] == 0xE8) {
+                                        // DONE: parse add
+                                        itemsize = parseitemsize(moveedi + 10 + *(uint32_t*)(moveedi + 6), 0x100);
+                                    } else {
+                                        itemsize = 0x58; // fallback
+                                    }
                                     itemcount = pushimm[1];
                                     g_fwarray = (firmware_rec_s*)lpstrpat;
                                     printf("Found \"push %d\" at RVA 0x%08X\n", itemcount, pushimm - (uint8_t*)dllmodule);
@@ -158,17 +173,17 @@ int main(int argc, char* argv[])
             }
         }
     }
-    // 判断是7.22还是v6版长度
+    // 判断是7.22还是v6版长度, 用大小判断不妥
     firmware6_rec_s* fwrec6 = (firmware6_rec_s*)g_fwarray;
     firmware722_rec_s* fwrec7 = g_fwarray;
     firmware_rec_s* fwrec7f = g_fwarray;
     if (hitted) {
         int localfiles = 0, saved = 0;
-        for (size_t i = 0; i < itemcount; i++, fwrec7++, fwrec6++) {
-            // 统一到7的存储
+        for (size_t i = 0; i < itemcount; i++, fwrec7f++, fwrec7++, fwrec6++) {
+            // 统一为最长的fwrec
             firmware_rec_s via6;
             firmware_rec_s via7;
-            firmware_rec_s* fwrec = (itemsize == 0x48)?&via6:(itemsize == 0x4C)?&via7:fwrec7f;
+            firmware_rec_s* fwrec = (itemsize == sizeof(fwrec6))?&via6:(itemsize == sizeof(fwrec7))?&via7:fwrec7f;
             if (itemsize == sizeof(*fwrec6)) {
                 via6.displayname = fwrec6->displayname;
                 via6.localfile = 0;
@@ -352,6 +367,20 @@ int main(int argc, char* argv[])
     _getch();
 #endif
 	return 0;
+}
+
+uint32_t parseitemsize(uint8_t* codeptr, int limit)
+{
+    while (limit > 0) {
+        //text:100AEF0F 83 C7 58                             add     edi, 58h
+        if (*codeptr == 0x83 && codeptr[1] == 0xC7u) {
+            return codeptr[2];
+        }
+        size_t oplen = ldisasm(codeptr, false);
+        limit -= oplen;
+        codeptr += oplen;
+    }
+    return 0;
 }
 
 void xordecode(void* dst, const void* src, size_t len) {

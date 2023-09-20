@@ -18,6 +18,7 @@ struct firmware_decinfo_s
     uint32_t rev28;
 };
 
+// 48
 struct firmware6_rec_s
 {
     const char *displayname;
@@ -40,6 +41,7 @@ struct firmware6_rec_s
     uint32_t rev44;
 };
 
+// 4C
 struct firmware722_rec_s
 {
     const char *displayname;
@@ -63,6 +65,7 @@ struct firmware722_rec_s
     uint32_t rev48;
 };
 
+// 58
 struct firmware_rec_s : firmware722_rec_s
 {
     uint32_t rev4C;

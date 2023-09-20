@@ -19,7 +19,9 @@ amd64_STDCALL=0
 
 MSC_WARNING_LEVEL=/W3
 
-#LINKER_FLAGS=$(LINKER_FLAGS) /FIXED
+LINKER_FLAGS=$(LINKER_FLAGS) /fixed
+DYNAMICBASE_FLAG=
+NO_DYNAMICBASE=1
 
 TARGETLIBS=$(SDK_LIB_PATH)\kernel32.lib \
            $(SDK_LIB_PATH)\user32.lib   \
@@ -29,4 +31,4 @@ TARGETLIBS=$(SDK_LIB_PATH)\kernel32.lib \
            $(SDK_LIB_PATH)\ole32.lib \
            $(SDK_LIB_PATH)\uuid.lib
 
-SOURCES=JLinkFirmwareExtractor1.cpp
+SOURCES=JLinkFirmwareExtractor1.cpp ldisasm.cpp
