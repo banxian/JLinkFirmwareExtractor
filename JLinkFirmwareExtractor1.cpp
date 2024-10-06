@@ -14,7 +14,9 @@
 
 void quickdump(unsigned int addr, const unsigned char *data, unsigned int amount);
 void setwin32filetime(const char* path, tm time);
-int errprintf(__in_z __format_string const char * _Format, ...);
+int colorprintf(WORD color, __in_z __format_string const char * _Format, ...);
+#define errprintf(fmt, ...) colorprintf(FOREGROUND_RED | FOREGROUND_INTENSITY, fmt, ##__VA_ARGS__)
+void printfound(const char* name, unsigned int addr);
 
 uintptr_t func_getfw_full = 0;
 void (__cdecl *func_dbgfree)(void* buffer) = 0;
@@ -28,6 +30,17 @@ void xordecode(void* dst, const void* src, size_t len);
 void normalizefilename(char* filepath);
 tm get_build_date(const char* version);
 uint32_t parseitemsize(uint8_t* codeptr, int limit);
+
+typedef struct {
+    WORD wLength;
+    WORD wValueLength;
+    WORD wType;
+    WCHAR szKey[16]; // "VS_VERSION_INFO\0"
+    WORD Padding1;
+    VS_FIXEDFILEINFO Value;
+    WORD Padding2;
+    WORD Children;
+} VS_VERSIONINFO;
 
 int main(int argc, char* argv[])
 {
@@ -58,6 +71,17 @@ int main(int argc, char* argv[])
         errprintf("LoadLibarary Failed!\n");
         return 0;
     }
+    HRSRC hResInfo = FindResource(dllmodule, MAKEINTRESOURCE(VS_VERSION_INFO), RT_VERSION);
+    HGLOBAL hResData = LoadResource(dllmodule, hResInfo);
+    VS_VERSIONINFO* info = (VS_VERSIONINFO*)LockResource(hResData);
+    int aver = info->Value.dwFileVersionLS >> 16;
+    printf("DLL version: %d.%d", info->Value.dwFileVersionMS >> 16, (WORD)info->Value.dwFileVersionMS);
+    if (aver) {
+        putchar('a'+aver-1);
+    }
+    putchar('\n');
+    FreeResource(hResData);
+    UnlockResource(info);
 
     PIMAGE_DOS_HEADER dosheader = (PIMAGE_DOS_HEADER)dllmodule;
     PIMAGE_NT_HEADERS ntheader = (PIMAGE_NT_HEADERS)((DWORD)dosheader + dosheader->e_lfanew);
@@ -68,19 +92,19 @@ int main(int argc, char* argv[])
     uint8_t* codebegin = (uint8_t*)dllmodule + ntheader->OptionalHeader.BaseOfCode;
     uint8_t* codeend = codebegin + ntheader->OptionalHeader.SizeOfCode;
     //quickdump(ntheader->OptionalHeader.BaseOfData, (unsigned char*)databegin, 0x100);
-    bool hitted = false;
+    bool found = false;
     firmware_rec_s* g_fwarray = NULL;
     uint32_t itemsize, itemcount = 0;
     // 寻找"J-Trace ARM Rev.1"
-    for (uint8_t* strpat = databegin; strpat < dataend - sizeof("J-Trace ARM Rev.1") && !hitted; strpat++) {
+    for (uint8_t* strpat = databegin; strpat < dataend - sizeof("J-Trace ARM Rev.1") && !found; strpat++) {
         if (*(uint32_t*)strpat == 'rT-J' && memcmp(strpat, "J-Trace ARM Rev.1", sizeof("J-Trace ARM Rev.1")) == 0) {
             printf("Found \"J-Trace ARM Rev.1\" at RVA 0x%08X\n", strpat - (uint8_t*)dllmodule);
-            for (uint8_t* lpstrpat = databegin; lpstrpat < dataend - sizeof(lpstrpat) && !hitted; lpstrpat++) {
+            for (uint8_t* lpstrpat = databegin; lpstrpat < dataend - sizeof(lpstrpat) && !found; lpstrpat++) {
                 if (*(uint32_t*)lpstrpat == (uint32_t)strpat) {
                     printf("Found g_fwarray at RVA 0x%08X\n", lpstrpat - (uint8_t*)dllmodule);
                     // .text:100B6CD6 BF A8 3A 42 10                       mov     edi, offset g_fwarray
                     // .text:100AEF4B B8 C0 B0 42 10                       mov     eax, offset g_fwarray
-                    for (uint8_t* moveedi = codebegin; moveedi < codeend - 0x20 && !hitted; moveedi++) {
+                    for (uint8_t* moveedi = codebegin; moveedi < codeend - 0x20 && !found; moveedi++) {
                         if (*moveedi == 0xBF && *(uint32_t*)(moveedi + 1) == (uint32_t)lpstrpat) {
                             printf("Found \"mov edi, offset g_fwarray\" at RVA 0x%08X\n", moveedi - (uint8_t*)dllmodule);
                             //.text:100B6D3B 83 C7 4C                             add     edi, 4Ch
@@ -98,7 +122,7 @@ int main(int argc, char* argv[])
                                     itemcount = arraysize / itemsize;
                                     g_fwarray = (firmware_rec_s*)lpstrpat;
                                     printf("Found \"cmp exx, %Xh\" at RVA 0x%08X\n", arraysize, cmpebp - (uint8_t*)dllmodule);
-                                    hitted = true;
+                                    found = true;
                                     break;
                                 }
                             }
@@ -120,9 +144,30 @@ int main(int argc, char* argv[])
                                     itemcount = pushimm[1];
                                     g_fwarray = (firmware_rec_s*)lpstrpat;
                                     printf("Found \"push %d\" at RVA 0x%08X\n", itemcount, pushimm - (uint8_t*)dllmodule);
-                                    hitted = true;
+                                    found = true;
                                     break;
                                 }
+                            }
+                        }
+                        // 8.10 是直接push
+                        //.text:100AE86C 6A 79                                push    121
+                        //.text:100AE86E 68 C0 15 43 10                       push    offset g_fwarray
+                        //.text:100AE873 FF 74 24 0C                          push    [esp+8+arg_0]
+                        //.text:100AE877 E8 24 FF FF FF                       call    func_outlinefind
+                        if (*moveedi == 0x68 && *(uint32_t*)(moveedi + 1) == (uint32_t)lpstrpat) {
+                            printf("Found \"push offset g_fwarray\" at RVA 0x%08X\n", moveedi - (uint8_t*)dllmodule);
+                            // 寻找下一个call
+                            for (uint8_t* call = moveedi; call < moveedi + 0x20; call+=ldisasm(call, false)) {
+                                if (*call == 0xE8) {
+                                    itemsize = parseitemsize(call + 5 + *(uint32_t*)(call + 1), 0x100);
+                                }
+                            }
+                            if (moveedi[-2] == 0x6A) {
+                                itemcount = moveedi[-1];
+                                g_fwarray = (firmware_rec_s*)lpstrpat;
+                                printf("Found \"push %d\" at RVA 0x%08X\n", itemcount, moveedi - 2 - (uint8_t*)dllmodule);
+                                found = true;
+                                break;
                             }
                         }
                     }
@@ -140,19 +185,49 @@ int main(int argc, char* argv[])
                 //.text:10177139 68 3C 51 67 10                       push    offset aDeflate
                 for (uint8_t* pushpat = codebegin; pushpat < codeend - 0x20 && !COMPRESS_DecompressToMem; pushpat++) {
                     if (*pushpat == 0x68 && *(uint32_t*)(pushpat + 1) == (uint32_t)strpat) {
-                        // 本函数是DEFLATE_CopyName, 寻找上一个函数入口
+                        // 本函数是DEFLATE_CopyName, 寻找上一个函数入口 (链接器没有对静态库重排序)
                         //.text:101770E0 8B 44 24 0C                          mov     eax, [esp+wrkmemsize]
                         //.text:101770E4 8B 4C 24 08                          mov     ecx, [esp+wrkmem]
                         //.text:101770E8 83 EC 18                             sub     esp, 18h
                         for (uint8_t* prolog = pushpat; prolog >= pushpat - 0x100; prolog--) {
                             if (*(uint32_t*)prolog == 0x0C24448B && *(uint32_t*)(prolog + 4) == 0x08244C8B) {
-                                printf("Found function DecompressToMem at RVA 0x%08X\n", prolog - (uint8_t*)dllmodule);
+                                printfound("DecompressToMem", prolog - (uint8_t*)dllmodule);
                                 *(uintptr_t*)&COMPRESS_DecompressToMem = (uintptr_t)prolog;
                                 break;
                             }
                         }
                     }
                 }
+            }
+        }
+        // 8.10开始COMPRESS_DecompressToMem不再跟DEFLATE_CopyName排在一起, 找Decompressing FW timestamp took %d us (6.14版没有)
+        if (!COMPRESS_DecompressToMem) {
+            for (uint8_t* strpat = databegin; strpat < dataend - sizeof("Decompressing FW timestamp took %d us") && !COMPRESS_DecompressToMem; strpat++) {
+                if (*(uint32_t*)strpat == 'oceD' && memcmp(strpat, "Decompressing FW timestamp took %d us", sizeof("Decompressing FW timestamp took %d us")) == 0) {
+                    printf("Found \"Decompressing FW timestamp took %%d us\" at RVA 0x%08X\n", strpat - (uint8_t*)dllmodule);
+                    for (uint8_t* pushpat = codebegin; pushpat < codeend - 0x20 && !COMPRESS_DecompressToMem; pushpat++) {
+                        //.text:100AE6CB 68 90 61 45 10                       push    offset aDecompressingF ; "Decompressing FW timestamp took %d us"
+                        if (*pushpat == 0x68 && *(uint32_t*)(pushpat + 1) == (uint32_t)strpat) {
+                            // 往前找push 0
+                            //.text:100AE6AE 6A 00                                push    0
+                            for (uint8_t* push0 = pushpat; push0 >= pushpat - 0x100 && !COMPRESS_DecompressToMem; push0--) {
+                                if (*(uint16_t*)push0 == 0x006A) {
+                                    for(uint8_t* call = push0; call != pushpat; call+=ldisasm(call, false)) {
+                                        if (*call == 0xE8) {
+                                            uint8_t* target = call + 5 + *(uint32_t*)(call + 1);
+                                            printfound("DecompressToMem", target - (uint8_t*)dllmodule);
+                                            *(uintptr_t*)&COMPRESS_DecompressToMem = (uintptr_t)target;
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if (!COMPRESS_DecompressToMem) {
+                errprintf("Missing function DecompressToMem!\n");
             }
         }
         //.text:100B7276 05 00 02 00 00                       add     eax, 200h
@@ -164,7 +239,7 @@ int main(int argc, char* argv[])
                     if (*calldecode == 0xE8) {
                         uint8_t* calldest = calldecode + *(uint32_t*)(calldecode + 1) + 5;
                         if (calldest >= codebegin && calldest < codeend) {
-                            printf("Found function decodefile at RVA 0x%08X\n", calldest - (uint8_t*)dllmodule);
+                            printfound("decodefile", calldest - (uint8_t*)dllmodule);
                             *(uintptr_t*)&func_decodefile = (uintptr_t)calldest;
                             break;
                         }
@@ -172,13 +247,44 @@ int main(int argc, char* argv[])
                 }
             }
         }
+        // 8.x, 用 "Error while decompressing RAMCode." 定位
+        //.text:100B3B3E E8 7D F6 F5 FF                       call    j__decodefile
+        //.text:100B3B43 8B 4C 24 24                          mov     ecx, [esp+104Ch+var_1028]
+        //.text:100B3B47 83 C4 14                             add     esp, 14h
+        //.text:100B3B4A 3B 41 0C                             cmp     eax, [ecx+0Ch]
+        //.text:100B3B4D 74 0A                                jz      short loc_100B3B59
+        //.text:100B3B4F 68 94 E6 4C 10                       push    offset aErrorWhileDeco ; "Error while dec
+        if (!func_decodefile) {
+            for (uint8_t* strpat = databegin; strpat < dataend - sizeof("Error while decompressing RAMCode.") && !func_decodefile; strpat++) {
+                if (*(uint32_t*)strpat == 'orrE' && memcmp(strpat, "Error while decompressing RAMCode.", sizeof("Error while decompressing RAMCode.")) == 0) {
+                    printf("Found \"Error while decompressing RAMCode.\" at RVA 0x%08X\n", strpat - (uint8_t*)dllmodule);
+                    for (uint8_t* pushpat = codebegin; pushpat < codeend - 0x20 && !func_decodefile; pushpat++) {
+                        if (*pushpat == 0x68 && *(uint32_t*)(pushpat + 1) == (uint32_t)strpat) {
+                            for (uint8_t* call = pushpat - 5; call > pushpat - 0x20; call--) {
+                                if (*call == 0xE8) {
+                                    uint8_t* calldest = call + *(uint32_t*)(call + 1) + 5;
+                                    if (calldest >= codebegin && calldest < codeend) {
+                                        printfound("decodefile", calldest - (uint8_t*)dllmodule);
+                                        *(uintptr_t*)&func_decodefile = (uintptr_t)calldest;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if (!func_decodefile) {
+                colorprintf(FOREGROUND_INTENSITY, "Missing function decodefile, try use local implement\n");
+            }
+        }
     }
-    // 判断是7.22还是v6版长度, 用大小判断不妥
+    // 判断是7.22还是v6版长度, 用大小判断不妥, 考虑用版本号
     firmware6_rec_s* fwrec6 = (firmware6_rec_s*)g_fwarray;
     firmware722_rec_s* fwrec7 = g_fwarray;
     firmware_rec_s* fwrec7f = g_fwarray;
-    if (hitted) {
-        int localfiles = 0, saved = 0;
+    if (found) {
+        int localfiles = 0, decodedfiles = 0, saved = 0;
         for (size_t i = 0; i < itemcount; i++, fwrec7f++, fwrec7++, fwrec6++) {
             // 统一为最长的fwrec
             firmware_rec_s via6;
@@ -193,16 +299,22 @@ int main(int argc, char* argv[])
                 via7.pub54 = true;
                 memcpy(&via7, fwrec7, sizeof(*fwrec7));
             }
-            // 历史设计, 数组最后有一个空白记录
+            // 历史设计, 数组最后有一个空白记录, 但有itemcount就用不到空白记录
             if (fwrec->displayname == 0) {
                 break;
             }
             if (fwrec->decinfo) {
-                printf("%d %X dec %X", i + 1, fwrec->decinfo->fwlen, fwrec->decinfo->decompresslen);
+                void(__cdecl*_CopyName)(char*, size_t) = *(void(__cdecl**)(char*, size_t))fwrec->decinfo->functions;
+                char algname[16];
+                _CopyName(algname, sizeof(algname) - 1);
+                printf("%d %s %X->%X", i + 1, algname, fwrec->decinfo->fwlen, fwrec->decinfo->decompresslen);
+            } else if (fwrec->localfile) {
+                printf("%d file", i + 1);
             } else {
-                printf("%d %X", i + 1, fwrec->len);
+                printf("%d store %X", i + 1, fwrec->len);
             }
-            printf(" flash %X %s", fwrec->flashspace, fwrec->displayname);
+            printf(" flash %X ", fwrec->flashspace);
+            colorprintf(FOREGROUND_RED|FOREGROUND_GREEN, "%s", fwrec->displayname);
             if (fwrec->localfile) {
                 printf(" (%s)", fwrec->localfile);
                 localfiles++;
@@ -289,6 +401,7 @@ int main(int argc, char* argv[])
                                         errprintf("decode file failed: %d\n", decoded);
                                     } else {
                                         fwsize = dstlen;
+                                        decodedfiles++;
                                     }
                                     //fastlz_level1_decompress((uint8_t*)filebuffer + 0x200, st.st_size - 0x200, (uint8_t*)fwbuffer);
                                 }
@@ -298,6 +411,7 @@ int main(int argc, char* argv[])
                                     } else {
                                         memcpy(fwbuffer, filebuffer + 0x200, fwsize);
                                     }
+                                    decodedfiles++;
                                 }
                                 free(filebuffer);
                             }
@@ -355,9 +469,9 @@ int main(int argc, char* argv[])
                 free(displayname);
             }
         }
-        printf("Saved %d firmware.\n", saved);
-        if (itemsize == 0x4C && localfiles) {
-            printf("There are %d firmware decode from Firmwares folder.\n", localfiles);
+        printf("Saved %d of %d firmware.\n", saved, itemcount - 1);
+        if (itemsize >= sizeof(firmware722_rec_s) && decodedfiles) {
+            printf("There are %d of %d firmware decode from Firmwares folder.\n", decodedfiles, localfiles);
         }
     }
 
@@ -456,12 +570,12 @@ void setwin32filetime(const char* path, tm time)
     }
 }
 
-int errprintf(__in_z __format_string const char * _Format, ...)
+int colorprintf(WORD color, __in_z __format_string const char * _Format, ...)
 {
     HANDLE hCon = GetStdHandle(STD_OUTPUT_HANDLE);
     CONSOLE_SCREEN_BUFFER_INFO info;
     GetConsoleScreenBufferInfo(hCon, &info);
-    SetConsoleTextAttribute(hCon, FOREGROUND_RED | FOREGROUND_INTENSITY);
+    SetConsoleTextAttribute(hCon, color);
     va_list va;
     va_start(va, _Format);
     int len = vfprintf(stderr, _Format, va);
@@ -471,174 +585,169 @@ int errprintf(__in_z __format_string const char * _Format, ...)
     return len;
 }
 
-int _cdecl _decodefile(const uint8_t *src, size_t srclen, uint8_t *dest, size_t destlen)
+void printfound(const char* name, unsigned int addr)
 {
-    unsigned int sbase;      // eax
-    size_t srclen1;          // edi
-    uint32_t headb;          // ebx
-    const uint8_t* src1;     // esi
-    unsigned int blo3;       // ecx
-    uint32_t bhi5;           // ebx
-    int bpos;                // edx
-    int npos;                // edx
-    unsigned int mask15;     // ebx
-    int newor;               // eax
-    unsigned int idx;        // edi
-    unsigned int maskb4;     // ebx
-    int bpos0;               // edx
-    int maskb3;              // edi
-    unsigned int maskbit;    // ecx
-    int masked;              // edi
-    //char maskb4_a;           // cl
-    unsigned int maskb4lo3;  // ecx
-    int dpos;                // esi
-    int blo3a2_1;            // ecx
-    int dposor;              // esi
-    int dpos0;               // esi
-    uint8_t* lpdest;         // ebp
-    uint8_t dstb;            // cl
-    uint8_t* ndest;          // esi
-    size_t tailen;           // [esp+4h] [ebp-18h]
-    int flag33;              // [esp+8h] [ebp-14h]
-    //unsigned int sbase;    // [esp+Ch] [ebp-10h]
-    unsigned int sb;         // [esp+10h] [ebp-Ch]
-    int blo3a2;              // [esp+14h] [ebp-8h]
-    //int dpos_a;              // [esp+18h] [ebp-4h]
-    const uint8_t* lpsrc;    // [esp+20h] [ebp+4h]
-    size_t srclena;          // [esp+24h] [ebp+8h]
+    //printf("Found function decodefile #2 at RVA 0x%08X\n", calldest - (uint8_t*)dllmodule);
+    printf("Found function ");
+    colorprintf(FOREGROUND_GREEN, "%s", name);
+    printf(" at RVA 0x%08X\n", addr);
+}
 
-    sbase = 0;
-    srclen1 = srclen - 1;
-    sb = 0;
-    srclena = srclen - 1;
-    if (!srclen)
+int __cdecl _decodefile(const uint8_t *src, size_t srcLen, uint8_t *dest, size_t destLen)
+{
+    unsigned int bitBuffer = 0;
+    unsigned int extraBits = 0;
+
+    if (srcLen == 0)
         return -101;
-    headb = *src;
-    src1 = src + 1;
-    blo3 = *src & 7;
-    lpsrc = src + 1;
-    if (blo3 >= 7)
+
+    uint8_t header = *src++; // window set 256~16k(wb8~14) encode as 0~6
+    srcLen--;
+
+    unsigned int minMatchLength = (header & 7) + 1;
+    if (minMatchLength > 7)
         return -104;
-    blo3a2 = blo3 + 2;
-    bhi5 = headb >> 3;
-    bpos = 5;
-    tailen = destlen;
-    flag33 = 0;
-    dpos = 0;
+
+    uint32_t bitAccumulator = header >> 3;
+    int remainingBitsCount = 5;
+    size_t destLeft = destLen;
+    int needRefill = 0;
+    int offset = 0; // don't place in while
+
     while (1) {
+        int bitsAvailable;
+        unsigned int currentBits;
+        
+        // retrieve bits from bitstream to currentBits
         while (1) {
-            npos = flag33 + bpos;
-            mask15 = (sbase << (char)bpos) | bhi5;
-            if (npos <= 32) {
-                if (npos >= 32) {
-                    flag33 = npos - 32;
-                    sbase = sb >> (40 - npos);
-                    npos = 32;
+            bitsAvailable = needRefill + remainingBitsCount;
+            currentBits = (bitBuffer << remainingBitsCount) | bitAccumulator;
+
+            // make currentBits is 32bit long
+            if (bitsAvailable > 32) {
+                bitBuffer >>= 6;
+                needRefill = 1;
+                bitsAvailable = 32;
+            } else if (bitsAvailable == 32) {
+                needRefill = bitsAvailable - 32;
+                bitBuffer = extraBits >> (40 - bitsAvailable);
+            } else {
+                while (srcLen--) {
+                    extraBits = *src++;
+                    currentBits |= extraBits << bitsAvailable;
+                    bitsAvailable += 8;
+
+                    if (bitsAvailable >= 32) {
+                        break;
+                    }
+                }
+
+                if (bitsAvailable < 31) {
+                    srcLen = 0;
+                    bitBuffer = 0;
+                    needRefill = 0;
+                    if (bitsAvailable < 0)
+                        return -101;
                 } else {
-                    while (srclen1--) {
-                        sb = *src1;
-                        newor = sb << npos;
-                        npos += 8;
-                        ++src1;
-                        mask15 |= newor;
-                        if (npos >= 32) {
-                            lpsrc = src1;
-                            srclena = srclen1;
-                            break;
-                        }
-                    }
-                    if (npos < 31) {
-                        lpsrc = src1;
-                        srclena = 0;
-                        sbase = 0;
-                        flag33 = 0;
-                        if (npos < 0)
-                            return -101;
-                    } else {
-                        flag33 = npos - 32;
-                        sbase = sb >> (40 - npos);
-                        npos = 32;
-                    }
+                    needRefill = bitsAvailable - 32;
+                    bitBuffer = extraBits >> (40 - bitsAvailable);
+                    bitsAvailable = 32;
                 }
-            } else {
-                sbase >>= 6;
-                flag33 = 1;
-                npos = 32;
             }
-            if ((mask15 & 1) != 0)
-                break;
-            if (!tailen)
+
+            // decide literal or copy
+            if ((currentBits & 1) != 0)
+                break; // copy
+
+            if (destLeft == 0)
                 return -100;
-            srclen1 = srclena;
-            *dest = mask15 >> 1;
-            src1 = lpsrc;
-            ++dest;
-            --tailen;
-            bhi5 = mask15 >> 9;
-            bpos = npos - 9;
+
+            // literal
+            *dest++ = currentBits >> 1;
+            destLeft--;
+            bitAccumulator = currentBits >> 9; // 1+8
+            remainingBitsCount = bitsAvailable - 9;
         }
-        if ((mask15 & 2) != 0) {
-            if ((mask15 & 4) != 0) {
-                maskb3 = (mask15 >> 3) & 1;
-                maskb4 = mask15 >> 4;
-                bpos0 = npos - 4;
+
+        // copy match sequence
+        unsigned int matchLen;
+        unsigned int offsetOrData;
+        int offsetBitPosition;
+        unsigned int offsetLowBits;
+
+        if ((currentBits & 2) != 0) {
+            // longer match length
+            int extraLen;
+            if ((currentBits & 4) != 0) {
+                extraLen = (currentBits >> 3) & 1;
+                offsetOrData = currentBits >> 4;
+                offsetBitPosition = bitsAvailable - 4;
             } else {
-                maskbit = 1;
-                masked = 0;
+                unsigned int maskBit = 1;
+                int masked = 0;
+
                 while (1) {
-                    mask15 >>= 2;
-                    npos -= 2;
-                    if ((mask15 & 2) != 0)
-                        masked += maskbit;
-                    maskbit *= 2;
-                    if (maskbit >= 0x80)
+                    currentBits >>= 2;
+                    bitsAvailable -= 2;
+
+                    if ((currentBits & 2) != 0)
+                        masked += maskBit;
+
+                    maskBit *= 2;
+                    if (maskBit >= 0x80)
                         break;
-                    if ((mask15 & 4) != 0) {
-                        mask15 >>= 1;
-                        --npos;
+
+                    if ((currentBits & 4) != 0) {
+                        currentBits >>= 1;
+                        bitsAvailable--;
                         break;
                     }
                 }
-                maskb4 = mask15 >> 2;
-                bpos0 = npos - 2;
-                maskb3 = maskbit + masked;
+
+                offsetOrData = currentBits >> 2;
+                offsetBitPosition = bitsAvailable - 2;
+                extraLen = maskBit + masked;
             }
-            idx = maskb3 + 4;
+            matchLen = extraLen + 4;
         } else {
-            idx = ((mask15 >> 2) & 1) + 2;
-            maskb4 = mask15 >> 3;
-            bpos0 = npos - 3;
+            // shorter match length
+            matchLen = ((currentBits >> 2) & 1) + 2;
+            offsetOrData = currentBits >> 3;
+            offsetBitPosition = bitsAvailable - 3;
         }
-        // 成功返回
-        if (idx > 0x102)
-            return destlen - tailen;
-        bhi5 = maskb4 >> 3;
-        bpos = bpos0 - 3;
-        maskb4lo3 = maskb4 & 7;
-        if (maskb4lo3) {
-            if (maskb4lo3 < 2) {
-                blo3a2_1 = blo3a2;
-                dposor = 0;
+
+        if (matchLen > 0x102)
+            return destLen - destLeft; // done, return decoded length
+
+        bitAccumulator = offsetOrData >> 3; // hi 5bit
+        remainingBitsCount = offsetBitPosition - 3;
+        offsetLowBits = offsetOrData & 7; // lo 3bit
+
+        if (offsetLowBits) {
+            int offsetShift;
+            int offsetBase;
+
+            if (offsetLowBits < 2) {
+                offsetShift = minMatchLength + 1;
+                offsetBase = 0;
             } else {
-                blo3a2_1 = maskb4lo3 + blo3a2 - 2;
-                dposor = 1 << blo3a2_1;
+                offsetShift = offsetLowBits + minMatchLength - 1;
+                offsetBase = 1 << offsetShift;
             }
-            bpos -= blo3a2_1;
-            dpos0 = bhi5 & ((1 << blo3a2_1) - 1) | dposor;
-            bhi5 >>= blo3a2_1;
-            dpos = dpos0 + 1;
+
+            remainingBitsCount -= offsetShift;
+            offset = ((bitAccumulator & ((1 << offsetShift) - 1)) | offsetBase) + 1;
+            bitAccumulator >>= offsetShift;
         }
-        if (idx > tailen)
-            return -100;
-        lpdest = &dest[-dpos];
-        tailen -= idx;
+
+        if (matchLen > destLeft)
+            return -100; // dest buffer not enough
+
+        destLeft -= matchLen;
+        // combine of memcpy(dest, dest - copyPositoin, copyLength), dest += copyLength
+        uint8_t* tailSrc = &dest[-offset];
         do {
-            dstb = *lpdest;
-            ndest = dest++;
-            ++lpdest;
-            *ndest = dstb;
-        } while (--idx);
-        src1 = lpsrc;
-        srclen1 = srclena;
+            *dest++ = *tailSrc++;
+        } while (--matchLen);
     }
 }
