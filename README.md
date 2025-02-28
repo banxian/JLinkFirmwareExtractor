@@ -7,10 +7,10 @@ J-Link Firmware Extractor
 2. 将extractor放入解压后的目录.
 3. 执行extractor, 默认将提取全部可用固件.
 
-## 命令行选项
+## 可选命令行选项
 
 - `-l`：仅列出固件, 不进行提取.
-- `<firmware_id>`: 提取特定固件.
+- `"model name"`: 提取特定固件.
 
 ## 编译方法
 
@@ -24,7 +24,7 @@ J-Link Firmware Extractor
 ## 注意事项
 
 - 程序需要 JLinkARM.dll 在同一目录下.
-- v7.x以后的软件包, 需要 Firmwares 目录才能解压 file 来源.
+- v7.x以后的软件包, 需要 Firmwares 目录才能解压标记为 file 来源的固件.
 - 提取的固件将保存在 out 目录中.
 
 ## Usage
@@ -33,10 +33,10 @@ J-Link Firmware Extractor
 2. Place the extractor executable in the extracted directory.
 3. Run the extractor. The default action is extract all firmware.
 
-## Command Line Options
+## Optional Command Line Options
 
-- `-L`: List firmware only, without extracting.
-- `<firmware_id>`: Extract specific firmware.
+- `-l`: List firmware only, without extracting.
+- `"model name"`: Extract specific firmware.
 
 ## Compilation
 

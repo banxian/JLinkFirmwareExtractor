@@ -154,6 +154,9 @@ int main(int argc, char* argv[])
                         //.text:100AE86E 68 C0 15 43 10                       push    offset g_fwarray
                         //.text:100AE873 FF 74 24 0C                          push    [esp+8+arg_0]
                         //.text:100AE877 E8 24 FF FF FF                       call    func_outlinefind
+                        // 8.12 变成宽push
+                        //.text:100C6A8C 68 81 00 00 00                       push    129
+                        //.text:100C6A91 68 F0 6F 45 10                       push    offset g_fwarray
                         if (*moveedi == 0x68 && *(uint32_t*)(moveedi + 1) == (uint32_t)lpstrpat) {
                             printf("Found \"push offset g_fwarray\" at RVA 0x%08X\n", moveedi - (uint8_t*)dllmodule);
                             // 寻找下一个call
@@ -166,6 +169,12 @@ int main(int argc, char* argv[])
                                 itemcount = moveedi[-1];
                                 g_fwarray = (firmware_rec_s*)lpstrpat;
                                 printf("Found \"push %d\" at RVA 0x%08X\n", itemcount, moveedi - 2 - (uint8_t*)dllmodule);
+                                found = true;
+                                break;
+                            } else if (moveedi[-2] == 0 && moveedi[-5] == 0x68) {
+                                itemcount = *(uint32_t*)&moveedi[-4];
+                                g_fwarray = (firmware_rec_s*)lpstrpat;
+                                printf("Found \"push %d\" at RVA 0x%08X\n", itemcount, moveedi - 5 - (uint8_t*)dllmodule);
                                 found = true;
                                 break;
                             }
